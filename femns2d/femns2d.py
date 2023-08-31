@@ -52,9 +52,12 @@ class Mini():
         return np.array([[0.950000000000002*k11 + 0.725*k12 + 0.725*k21 + 0.949999999999999*k22, -0.049999999999998*k11 + 0.225*k12 - 0.275*k21 + 0.449999999999999*k22, 0.450000000000002*k11 - 0.275*k12 + 0.225*k21 - 0.0500000000000007*k22, -1.35000000000001*k11 - 0.675000000000001*k12 - 0.675000000000001*k21 - 1.35*k22], [-0.049999999999998*k11 - 0.275*k12 + 0.225*k21 + 0.449999999999999*k22, 0.950000000000002*k11 + 0.225*k12 + 0.225*k21 + 0.449999999999999*k22, 0.450000000000002*k11 + 0.725*k12 + 0.225*k21 + 0.449999999999999*k22, -1.35*k11 - 0.675000000000001*k12 - 0.675000000000001*k21 - 1.35*k22], [0.450000000000002*k11 + 0.225*k12 - 0.275*k21 - 0.0500000000000007*k22, 0.450000000000002*k11 + 0.225*k12 + 0.725*k21 + 0.449999999999999*k22, 0.450000000000002*k11 + 0.225*k12 + 0.225*k21 + 0.949999999999999*k22, -1.35000000000001*k11 - 0.675000000000001*k12 - 0.675000000000001*k21 - 1.35*k22], [-1.35000000000001*k11 - 0.675000000000001*k12 - 0.675000000000001*k21 - 1.35*k22, -1.35*k11 - 0.675000000000001*k12 - 0.675000000000001*k21 - 1.35*k22, -1.35000000000001*k11 - 0.675000000000001*k12 - 0.675000000000001*k21 - 1.35*k22, (81/20)*k11 + (81/40)*k12 + (81/40)*k21 + (81/20)*k22]])
 
     def unit_convection_matrix(self, v):
-        #The matrix -int_{T0} phi_0^j (\nabla phi_0^i \cdot v) dV
+        #The matrix int_{T0} phi_0^i (\nabla phi_0^j \cdot v) dV
         v1, v2 = v[0], v[1]
-        return np.array([[0.166666666666666*v1 + 0.166666666666667*v2, 0.0166666666666675*v1 + 0.0916666666666666*v2, 0.0916666666666668*v1 + 0.0166666666666666*v2, 0.224999999999994*v1 + 0.225*v2], [-0.0166666666666675*v1 + 0.075*v2, -0.166666666666668*v1, -0.0916666666666668*v1 - 0.075*v2, -0.225000000000001*v1], [0.0750000000000011*v1 - 0.0166666666666666*v2, -0.0749999999999993*v1 - 0.0916666666666666*v2, -0.166666666666667*v2, -0.225*v2], [-0.225000000000001*v1 - 0.225*v2, 0.225000000000001*v1, 0.225*v2, 0]])
+        #For dumb reasons, I computed first the matrix -int_{T0} phi_0^j (\nabla phi_0^i \cdot v) dV
+        A = np.array([[0.166666666666666*v1 + 0.166666666666667*v2, 0.0166666666666675*v1 + 0.0916666666666666*v2, 0.0916666666666668*v1 + 0.0166666666666666*v2, 0.224999999999994*v1 + 0.225*v2], [-0.0166666666666675*v1 + 0.075*v2, -0.166666666666668*v1, -0.0916666666666668*v1 - 0.075*v2, -0.225000000000001*v1], [0.0750000000000011*v1 - 0.0166666666666666*v2, -0.0749999999999993*v1 - 0.0916666666666666*v2, -0.166666666666667*v2, -0.225*v2], [-0.225000000000001*v1 - 0.225*v2, 0.225000000000001*v1, 0.225*v2, 0]])
+        #So I'm transposing and negating it to make it correct 
+        return -A.T
 
     def unit_velocity_pressure_convection_matrix(self, v):
         v1, v2 = v[0], v[1]
@@ -84,7 +87,9 @@ class Linear():
     def unit_convection_matrix(self, v):
         #The matrix -int_{T0} phi_0^j (\nabla phi_0^i \cdot v) dV
         v1, v2 = v[0], v[1]
-        return np.array([[(1/6)*v1 + (1/6)*v2, (1/6)*v1 + (1/6)*v2, (1/6)*v1 + (1/6)*v2], [-1/6*v1, -1/6*v1, -1/6*v1], [-1/6*v2, -1/6*v2, -1/6*v2]])
+        #For dumb reasons, I computed first the matrix -int_{T0} phi_0^j (\nabla phi_0^i \cdot v) dV
+        A = np.array([[(1/6)*v1 + (1/6)*v2, (1/6)*v1 + (1/6)*v2, (1/6)*v1 + (1/6)*v2], [-1/6*v1, -1/6*v1, -1/6*v1], [-1/6*v2, -1/6*v2, -1/6*v2]])
+        return -A.T
 
 class MiniAssembler():
     def __init__(self, mesh):
@@ -92,10 +97,38 @@ class MiniAssembler():
         self.mini = Mini()
         self.linear = Linear()
         self.main_element = "mini"
+        self.has_boundary_normals = False
 
     def set_main_element(self, element):
         assert element in ["mini", "linear"]
         self.main_element = element
+
+    def set_boundary_vectors(self):
+        boundary_centroids = np.mean(self.points[self.boundary_elements], axis=1)
+        boundary_inner_point_map = np.empty(shape=self.boundary_elements.shape[0], dtype=int)
+        boundary_element_map = np.empty(shape=self.boundary_elements.shape[0], dtype=int)
+        for i, b in enumerate(self.boundary_elements):
+            for j, e in enumerate(self.elements):
+                diff = np.setdiff1d(e, b)
+                if len(diff) == 1:
+                    boundary_inner_point_map[i] = diff[0]
+                    boundary_element_map[i] = j
+                    break
+        boundary_points = self.points[self.boundary_elements, :-1]
+        boundary_tangent_vector = boundary_points[:, 1, :] - boundary_points[:, 0, :]
+        boundary_normal_vector = np.einsum('ij, ...j -> ...i', np.array([[0, -1], [1, 0]]), boundary_tangent_vector)
+        inner_point = self.points[boundary_inner_point_map][..., :-1]
+        revert = ((inner_point - boundary_centroids[:, :-1])*boundary_normal_vector).sum(axis=-1) > 0
+        boundary_normal_vector[revert] *= -1
+        boundary_lengths = np.linalg.norm(boundary_normal_vector, axis=-1) #Since is a rotation, same length as tangent
+        boundary_normal_vector /= (boundary_lengths[..., None] + 1e-6)
+        boundary_lengths = np.linalg.norm(boundary_normal_vector, axis=-1, keepdims=True)
+        self.boundary_centroids = boundary_centroids
+        self.boundary_element_map = boundary_element_map
+        self.boundary_normals = boundary_normal_vector
+        self.boundary_lengths = boundary_lengths
+        self.has_boundary_normals = True
+
 
     def element_translation_matrix_and_vector(self, i):
         element_nodes = self.mesh.cells_dict["triangle"][i]
@@ -316,28 +349,52 @@ class MiniAssembler():
         return fvec
 
     def apply_dirichlet_to_matrix(self, markers, matrix, where='u',
-                                data_dict_name="gmsh:physical"):
+                                  data_dict_name="gmsh:physical",
+                                  excluded_markers = []):
         mesh = self.mesh
         npoints = mesh.points.shape[0]
         boundary_elements = mesh.cells_dict["line"]
         boundary_markers = mesh.cell_data_dict[data_dict_name]["line"]
         leap = ['u', 'v', 'p'].index(where)
+        if len(excluded_markers) > 0:
+            excluded_nodes = []
+            for excluded_marker in excluded_markers:
+                excluded_nodes_for_marker = boundary_elements[boundary_markers == excluded_marker, :].flatten()
+                excluded_nodes.append(excluded_nodes_for_marker)
+            excluded_nodes = np.hstack(excluded_nodes)
+        else:
+            excluded_nodes = np.zeros([0], dtype=int)
+        boundary_nodes = []
         for marker in markers:
-            boundary_nodes = np.unique(boundary_elements[boundary_markers == marker, :].flatten())
-            boundary_nodes += leap*(self.npoints + self.nelements)
-            matrix[boundary_nodes, :] = 0  # Zeroing the row
-            matrix[boundary_nodes, boundary_nodes] = 1
+            boundary_nodes_for_marker = boundary_elements[boundary_markers == marker, :].flatten()
+            boundary_nodes.append(boundary_nodes_for_marker)
+        boundary_nodes = np.unique(np.hstack(boundary_nodes))
+        if len(excluded_nodes) > 0:
+            boundary_nodes = np.setdiff1d(boundary_nodes, excluded_nodes)
+        boundary_nodes += leap*(self.npoints + self.nelements)
+        matrix[boundary_nodes, :] = 0  # Zeroing the row
+        matrix[boundary_nodes, boundary_nodes] = 1
         return matrix
 
     def apply_dirichlet_to_vector(self, values, markers, vector, where='u',
-                                  data_dict_name="gmsh:physical"):
+                                  data_dict_name="gmsh:physical",
+                                  excluded_markers = []):
         mesh = self.mesh
         npoints = mesh.points.shape[0]
         boundary_elements = mesh.cells_dict["line"]
         boundary_markers = mesh.cell_data_dict[data_dict_name]["line"]
         leap = ['u', 'v', 'p'].index(where)
+        if len(excluded_markers) > 0:
+            excluded_nodes = []
+            for excluded_marker in excluded_markers:
+                excluded_nodes_for_marker = boundary_elements[boundary_markers == excluded_marker, :].flatten()
+                excluded_nodes.append(excluded_nodes_for_marker)
+            excluded_nodes = np.hstack(excluded_nodes)
+        else:
+            excluded_nodes = np.zeros([0], dtype=int)
         for value, marker in zip(values, markers):
             boundary_nodes = np.unique(boundary_elements[boundary_markers == marker, :].flatten())
+            boundary_nodes = np.setdiff1d(boundary_nodes, excluded_nodes)
             if callable(value):
                 val = value(self.points[boundary_nodes, :])
             else:
@@ -433,6 +490,10 @@ class MiniAssembler():
     def elements(self):
         return self.mesh.cells_dict["triangle"]
 
+    @property
+    def boundary_elements(self):
+        return self.mesh.cells_dict["line"]
+    
     @property
     def npointse(self):
         return self.npoints + self.nelements
