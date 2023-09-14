@@ -1,4 +1,5 @@
 import itertools
+import collections
 
 import numpy as np
 
@@ -75,6 +76,10 @@ class Linear():
         #The int_{T0} \phi_0^j dV
         return np.array([[1/6], [1/6], [1/6]]).flatten()
 
+    def unit_line_forcing_vector(self):
+        #The int_{T0} \phi_0^j dV
+        return np.array([[1/2], [1/2]]).flatten()
+
     def unit_mass_matrix(self):
         #The matrix int_{T0} \phi_0^i \phi_0^j dV
         return np.array([[1/12, 1/24, 1/24], [1/24, 1/12, 1/24], [1/24, 1/24, 1/12]])
@@ -91,6 +96,7 @@ class Linear():
         A = np.array([[(1/6)*v1 + (1/6)*v2, (1/6)*v1 + (1/6)*v2, (1/6)*v1 + (1/6)*v2], [-1/6*v1, -1/6*v1, -1/6*v1], [-1/6*v2, -1/6*v2, -1/6*v2]])
         return -A.T
 
+    
 class MiniAssembler():
     def __init__(self, mesh):
         self.mesh = mesh
@@ -103,7 +109,23 @@ class MiniAssembler():
         assert element in ["mini", "linear"]
         self.main_element = element
 
+    def set_line_elements(self):
+        line_elements_counter = collections.defaultdict(lambda : list())
+        for j, triangle in enumerate(self.elements):
+            for i in range(3):
+                # Extract the vertices of each edge and sort them to ensure uniqueness
+                edge = tuple(sorted([triangle[i], triangle[(i + 1) % 3]]))
+                line_elements_counter[edge].append(j)
+        line_elements = np.vstack(list(line_elements_counter.keys()))
+        self.line_elements = line_elements
+        self.line_elements_to_elements = line_elements_counter
+        self.line_lengths = np.sqrt(np.sum((self.points[line_elements][:, 0, :] - 
+                                            self.points[line_elements][:, 1, :])**2,
+                                           axis=-1))
+
+
     def set_boundary_vectors(self):
+        raise NotImplementedError
         boundary_centroids = np.mean(self.points[self.boundary_elements], axis=1)
         boundary_inner_point_map = np.empty(shape=self.boundary_elements.shape[0], dtype=int)
         boundary_element_map = np.empty(shape=self.boundary_elements.shape[0], dtype=int)
@@ -122,7 +144,6 @@ class MiniAssembler():
         boundary_normal_vector[revert] *= -1
         boundary_lengths = np.linalg.norm(boundary_normal_vector, axis=-1) #Since is a rotation, same length as tangent
         boundary_normal_vector /= (boundary_lengths[..., None] + 1e-6)
-        boundary_lengths = np.linalg.norm(boundary_normal_vector, axis=-1, keepdims=True)
         self.boundary_centroids = boundary_centroids
         self.boundary_element_map = boundary_element_map
         self.boundary_normals = boundary_normal_vector
@@ -148,15 +169,21 @@ class MiniAssembler():
         nodes = self.mesh.cells_dict["triangle"]
         A, b = self.element_translation_matrix_and_vector(i)
         node_det = np.linalg.det(A)
-        base = self.mini.unit_forcing_vector()
+        base = self.belel.unit_forcing_vector()
         element_forcing = forcing*node_det*base
         return element_forcing
 
-    def element_mass_matrix(self, i, unitfunction=None):
+    def line_element_forcing_vector(self, i, forcing):
+        base = self.belel.unit_line_forcing_vector()
+        node_det = self.line_lengths[i]
+        element_forcing = forcing*node_det*base
+        return element_forcing
+
+    def element_mass_matrix(self, i, mass=1.0, unitfunction=None):
         A, b = self.element_translation_matrix_and_vector(i)
         node_det = np.linalg.det(A)
         base = self.belel.unit_mass_matrix()
-        M = node_det*base
+        M = node_det*base*mass
         return M
 
     def element_convection_matrix(self, i, u, unitfunction=None):
@@ -199,7 +226,7 @@ class MiniAssembler():
         M = node_det*self.mini.unit_pressure_velocity_convection_matrix(v)
         return M
 
-    def mass_matrix(self):
+    def mass_matrix(self, mass_fn=1.0, mass_fn_type='function'):
         nodes = self.mesh.points
         elements = self.mesh.cells_dict["triangle"]
         num_nodes = nodes.shape[0]
@@ -208,7 +235,16 @@ class MiniAssembler():
         
         M = scipy.sparse.dok_matrix((self.nvariables, self.nvariables))
         for i, nodes in enumerate(self.mesh.cells_dict["triangle"]):
-            element_mass = self.element_mass_matrix(i)
+            if not callable(mass_fn):
+                mass_value = mass_fn
+            else:
+                if mass_fn_type == 'function':
+                    nodepoints = self.mesh.points[nodes, :]
+                    centroid = nodepoints.mean(axis=0)
+                    mass_value = mass_fn(centroid)
+                elif mass_fn_type == 'element':
+                    mass_value = mass_fn(i)
+            element_mass = self.element_mass_matrix(i, mass_value)
             element_index = num_nodes + i
             if self.main_element == "mini":
                 element_index = num_nodes + i
@@ -320,7 +356,7 @@ class MiniAssembler():
                 for b, enodeb in enumerate(extended_nodes):
                     G[nodea, enodeb] += element_convection[a, b]
         return G
-    
+        
     def forcing_vector(self, forcing_fn=None, forcing_fn_type='function'):
         num_nodes = self.mesh.points.shape[0]
         num_elements = len(self.mesh.cells_dict["triangle"])
@@ -340,6 +376,34 @@ class MiniAssembler():
                     forcing = forcing_fn(i)
             element_forcing = self.element_forcing_vector(i, forcing)
             if self.main_element == "mini":
+                element_index = num_nodes + i
+                extended_nodes = np.hstack([nodes, [element_index]])
+            else:
+                extended_nodes = nodes
+            for i, enode in enumerate(extended_nodes):
+                fvec[enode] += element_forcing[i]
+        return fvec
+    
+    def line_forcing_vector(self, forcing_fn=None, forcing_fn_type='function'):
+        num_nodes = self.mesh.points.shape[0]
+        num_line_elements = len(self.line_elements)
+        fvec = np.zeros(self.nvariables)
+        for i, nodes in enumerate(self.line_elements):
+            if not callable(forcing_fn):
+                if forcing_fn is None:
+                    forcing = 1.0
+                else:
+                    forcing = forcing_fn
+            else:
+                if forcing_fn_type == 'function':
+                    nodepoints = self.mesh.points[nodes, :]
+                    centroid = nodepoints.mean(axis=0)
+                    forcing = forcing_fn(centroid)
+                elif forcing_fn_type == 'element':
+                    forcing = forcing_fn(i)
+            element_forcing = self.line_element_forcing_vector(i, forcing)
+            if self.main_element == "mini":
+                raise NotImplementedError
                 element_index = num_nodes + i
                 extended_nodes = np.hstack([nodes, [element_index]])
             else:
@@ -414,6 +478,12 @@ class MiniAssembler():
                                         axis=-1)
         element_coefficients = np.linalg.solve(element_matrix, element_values)
         return element_coefficients
+
+    def get_centroid_values_from_linear(self, values):
+        element_coefficients = self.get_linear_element_equation(values)
+        centroids = self.centroids
+        centroids[:, -1] = 1.0
+        return (element_coefficients*centroids).sum(axis=-1)
 
     def split_velocities(self, uxyp):
         n = self.npoints + self.nelements
